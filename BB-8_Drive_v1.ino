@@ -3,8 +3,7 @@
 #include "Wire.h"
 #include "I2Cdev.h" // https://github.com/jrowberg/i2cdevlib/
 #include "MPU6050_6Axis_MotionApps20.h"// https://github.com/jrowberg/i2cdevlib/tree/master/Arduino/MPU6050
-#include "PID_v1.h"
-
+#include "PID_v1.h" // https://github.com/br3ttb/Arduino-PID-Library/
 
 // ====================================================================================================================
 // ******* Global variables
@@ -151,7 +150,7 @@ void setupMPU() {
 }
 
 /* =================================================================
- * setupBluetoothMate() - Configure BluetoothMate
+ * setupBluetoothMate() - Configure BluetoothMate for commanding
  */
 void setupBluetoothMate() {
   bluetooth.begin(115200);  // The Bluetooth Mate defaults to 115200bps
@@ -165,9 +164,9 @@ void setupBluetoothMate() {
 }
 
 /* =================================================================
- * checkForCommandAndDriveRobot() - Check for incoming Bluetooth
- * commands and react accordingly.
- */
+  * checkForCommandAndDriveRobot() - Check for incoming Bluetooth
+  * commands and react accordingly.
+*/
 void checkForCommandAndDriveRobot() {
   if(bluetooth.available())  // If the bluetooth sent any characters
   {
@@ -227,15 +226,10 @@ void processMPU() {
   // wait for MPU interrupt or extra packet(s) available
   while (!mpuInterrupt && fifoCount < packetSize) {
       // other program behavior stuff here
-      // .
-      // .
-      // .
+
       // if you are really paranoid you can frequently test in between other
       // stuff to see if mpuInterrupt is true, and if so, "break;" from the
       // while() loop to immediately process the MPU data
-      // .
-      // .
-      // .
   }
 
   // reset interrupt flag and get INT_STATUS byte
@@ -316,6 +310,7 @@ void processMPU() {
     Serial.println("");
   }
 }
+
 
 /* =================================================================
  * setup() - Run once at startup
