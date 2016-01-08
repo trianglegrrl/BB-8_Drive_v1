@@ -5,6 +5,11 @@
 #include "MPU6050_6Axis_MotionApps20.h"// https://github.com/jrowberg/i2cdevlib/tree/master/Arduino/MPU6050
 #include "PID_v1.h"
 
+
+// ====================================================================================================================
+// ******* Global variables
+// ====================================================================================================================
+
 /*
  * Set up Bluetooth module
  */
@@ -80,11 +85,14 @@ void dmpDataReady() {
     mpuInterrupt = true;
 }
 
-
 /* =================================================================
  * Configuration options
  */
 char navCommand; // Variable that holds the navigation command read from Bluetooth
+
+// ====================================================================================================================
+// ******* Functions
+// ====================================================================================================================
 
 /* =================================================================
  * setupMPU() - Configure the mpu for DMP mode
@@ -157,18 +165,9 @@ void setupBluetoothMate() {
 }
 
 /* =================================================================
- * setup() - Run once at startup
+ * checkForCommandAndDriveRobot() - Check for incoming Bluetooth
+ * commands and react accordingly.
  */
-void setup()
-{
-  // Set up local serial output
-  Serial.begin(115200);
-
-  setupMPU();
-
-  setupBluetoothMate();
-}
-
 void checkForCommandAndDriveRobot() {
   if(bluetooth.available())  // If the bluetooth sent any characters
   {
@@ -316,6 +315,19 @@ void processMPU() {
     Serial.print(aaWorld.z);
     Serial.println("");
   }
+}
+
+/* =================================================================
+ * setup() - Run once at startup
+ */
+void setup()
+{
+  // Set up local serial output
+  Serial.begin(115200);
+
+  setupMPU();
+
+  setupBluetoothMate();
 }
 
 /* =================================================================
