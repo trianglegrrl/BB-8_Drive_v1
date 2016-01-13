@@ -14,7 +14,7 @@
 
 #include "DualVNH5019MotorShield.h" // https://github.com/pololu/dual-vnh5019-motor-shield
 
-#include "MPU6050_6Axis_MotionApps20.h"// https://github.com/jrowberg/i2cdevlib/tree/master/Arduino/MPU6050
+#include "MPU6050_6Axis_MotionApps20.h" // https://github.com/jrowberg/i2cdevlib/tree/master/Arduino/MPU6050
 #include "PID_v1.h" // https://github.com/br3ttb/Arduino-PID-Library/
 
 
