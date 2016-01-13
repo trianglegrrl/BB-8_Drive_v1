@@ -1,9 +1,23 @@
-#include "DualVNH5019MotorShield.h" // https://github.com/pololu/dual-vnh5019-motor-shield
-#include "SoftwareSerial.h"
+/*
+   Download the Dynamixel and updated SoftwareSerial libraries from here: http://sourceforge.net/projects/dynamixelforarduino/files/
+   Just download the updated SoftwareSerial and stick it in `Arduino/libraries`. It will supercede the one in the app at
+        /Applications/Arduino.app/Contents/Java/hardware/arduino/avr/libraries/SoftwareSerial
+   The only reason you need the new one is that it makes some private methods public, and those methods are used in the Dynamixel lib.
+
+   If you aren't using Dynamixels, you don't need the updated SoftwareSerial. The default one will do just fine.
+ */
+#include "SoftwareSerial.h" // Note that this is the replaced version required by the DynamixelSoftSerial - see link below.
+#include "DynamixelSerial1.h" // http://savageelectronics.blogspot.com.es/2011/08/actualizacion-biblioteca-dynamixel.html
+
 #include "Wire.h"
 #include "I2Cdev.h" // https://github.com/jrowberg/i2cdevlib/
+
+#include "DualVNH5019MotorShield.h" // https://github.com/pololu/dual-vnh5019-motor-shield
+
 #include "MPU6050_6Axis_MotionApps20.h"// https://github.com/jrowberg/i2cdevlib/tree/master/Arduino/MPU6050
 #include "PID_v1.h" // https://github.com/br3ttb/Arduino-PID-Library/
+
+
 
 // ====================================================================================================================
 // ******* Global variables
@@ -41,7 +55,6 @@ SoftwareSerial bluetooth(bluetoothTx, bluetoothRx);
 DualVNH5019MotorShield mainMotorDriver(VNH5019_INA1, VNH5019_INB1, VNH5019_EN1DIAG1, VNH5019_CS1,
                                        VNH5019_INA2, VNH5019_INB2, VNH5019_EN2DIAG2, VNH5019_CS2);
 
-
 int speedForRollingForward = 200, // Default speed for rolling forward
     speedForRollingBackward = -200, // Default speed for rolling backward
     speedForBrakingRoll = 0; // Speed for stopping roll
@@ -52,6 +65,10 @@ int speedForRotatingLeft = 300, // Default speed for rotating left
 int fwdBkwdSpeed, // M1 on Pololu VNH5019 is both Fwd/Bkwd motors
     rotateSpeed = 0; // M2 on Pololu VNH5019 is flywheel motor
 
+// Counters for actions
+int counter1Start = millis();
+int counter1TargetElapsed = millis();
+int counter1ActuallyElapsed = millis();
 
 /* =================================================================
  * Set up gy521 MPU6050 mpu
@@ -84,6 +101,31 @@ void dmpDataReady() {
     mpuInterrupt = true;
 }
 
+
+/* =================================================================
+ * Set up Dynamixel AX-12a Servos
+
+ This was a little annoying. There's a good explanation at http://savageelectronics.blogspot.ca/2011/01/arduino-y-dynamixel-ax-12.html,
+ which is really quite easy. There's a hand-drawn diagram that shows you how to connect the 74LS241 buffer so the Arduino can
+ talk to the servos, but I've also drawn that up in the Fritzing diagram.
+
+ The Dynamixel library requires a custom SoftwareSerial library, which you can download from the link at the top of this file.
+
+ I'm currently using two servos for the head pan/tilt.
+*/
+
+#define DYNAMIXEL_FLOW_CONTROL_PIN 5
+#define HEAD_PAN_SERVO_ID 1
+#define HEAD_TILT_SERVO_ID 2
+
+// Variables to track the details the Dynamixel servos give us.
+int headPanTemp = 0,
+    headPanVoltage = 0,
+    headPanPosition = 0,
+    headTiltTemp = 0,
+    headTiltVoltage = 0,
+    headTiltPosition = 0;
+
 /* =================================================================
  * Configuration options
  */
@@ -92,6 +134,19 @@ char navCommand; // Variable that holds the navigation command read from Bluetoo
 // ====================================================================================================================
 // ******* Functions
 // ====================================================================================================================
+
+/* =================================================================
+ * readDynamixelState() - Read the current states of the Dynamixel servos
+ *
+ */
+void readDynamixelState() {
+  headPanTemp = Dynamixel.readTemperature(HEAD_PAN_SERVO_ID);
+  headTiltTemp = Dynamixel.readTemperature(HEAD_TILT_SERVO_ID);
+  headPanVoltage = Dynamixel.readVoltage(HEAD_PAN_SERVO_ID);
+  headTiltVoltage = Dynamixel.readVoltage(HEAD_TILT_SERVO_ID);
+  headPanPosition = Dynamixel.readPosition(HEAD_PAN_SERVO_ID);
+  headTiltPosition = Dynamixel.readPosition(HEAD_TILT_SERVO_ID);
+}
 
 /* =================================================================
  * setupMPU() - Configure the mpu for DMP mode
@@ -159,59 +214,73 @@ void setupBluetoothMate() {
   bluetooth.print("$");  // Enter command mode
   delay(100);  // Short delay, wait for the Mate to send back CMD
   bluetooth.println("U,9600,N");  // Temporarily Change the baudrate to 9600, no parity
+  delay(100);
   // 115200 can be too fast at times for NewSoftSerial to relay the data reliably
-  bluetooth.begin(9600);  // Start bluetooth serial at 9600
+  bluetooth.begin(9600);
 }
 
+void checkForCommandAndDriveRobot() {
 /* =================================================================
   * checkForCommandAndDriveRobot() - Check for incoming Bluetooth
   * commands and react accordingly.
 */
-void checkForCommandAndDriveRobot() {
-  if(bluetooth.available())  // If the bluetooth sent any characters
-  {
-    navCommand =  bluetooth.read(); // Get them
+  if(bluetooth.available()) {
+    navCommand = bluetooth.read();
 
-    if (navCommand == -1) { return; } // If there's nothing, just GTFO
-
-    switch ((char)navCommand) {
-       case 'F':
-         fwdBkwdSpeed = speedForRollingForward;
-         rotateSpeed = speedForBrakingRotation;
-         break;
-       case 'B':
-         fwdBkwdSpeed = speedForRollingBackward;
-         rotateSpeed = speedForBrakingRotation;
-         break;
-       case 'L':
-         fwdBkwdSpeed = speedForBrakingRoll;
-         rotateSpeed = speedForRotatingLeft;
-         break;
-       case 'R':
-         fwdBkwdSpeed = speedForBrakingRoll;
-         rotateSpeed = speedForRotatingRight;
-         break;
-       default:
-         fwdBkwdSpeed = speedForBrakingRoll;
-         rotateSpeed = speedForBrakingRotation;
-         break;
-    }
-    mainMotorDriver.setM1Speed(fwdBkwdSpeed);
-    mainMotorDriver.setM2Speed(rotateSpeed);
-
-    if ((char)navCommand == 'S') { return; } // Don't print anything; just return if it's a stop
-    Serial.print(", Fwd/bkwd current: ");
-    Serial.print(mainMotorDriver.getM1CurrentMilliamps());
-    Serial.print(", Rotate current: ");
-    Serial.print(mainMotorDriver.getM2CurrentMilliamps());
-    Serial.print(", Fwd/bkwd speed: ");
-    Serial.print(fwdBkwdSpeed);
-    Serial.print(", rotate speed: ");
-    Serial.print(rotateSpeed);
-    Serial.print(", command: ");
-    Serial.print((char)navCommand);
-    Serial.println("");
+    if (navCommand != -1) { performRobotAction(navCommand); }
   }
+
+  if(Serial.available()) {
+    navCommand = Serial.read();
+
+    if (navCommand != -1) { performRobotAction(navCommand); }
+  }
+}
+
+/* =================================================================
+  * performRobotAction() - Actuate robot as requested.
+*/
+void performRobotAction(char navCommand) {
+  switch (navCommand) {
+     case 'F':
+       fwdBkwdSpeed = speedForRollingForward;
+       rotateSpeed = speedForBrakingRotation;
+       break;
+     case 'B':
+       fwdBkwdSpeed = speedForRollingBackward;
+       rotateSpeed = speedForBrakingRotation;
+       break;
+     case 'L':
+       fwdBkwdSpeed = speedForBrakingRoll;
+       rotateSpeed = speedForRotatingLeft;
+       break;
+     case 'R':
+       fwdBkwdSpeed = speedForBrakingRoll;
+       rotateSpeed = speedForRotatingRight;
+       break;
+     case 'I':
+       processMPU();
+       break;
+     default:
+       fwdBkwdSpeed = speedForBrakingRoll;
+       rotateSpeed = speedForBrakingRotation;
+       break;
+  }
+  mainMotorDriver.setM1Speed(fwdBkwdSpeed);
+  mainMotorDriver.setM2Speed(rotateSpeed);
+
+  if ((char)navCommand == 'S') { return; } // Don't print anything; just return if it's a stop
+  Serial.print(", Fwd/bkwd current: ");
+  Serial.print(mainMotorDriver.getM1CurrentMilliamps());
+  Serial.print(", Rotate current: ");
+  Serial.print(mainMotorDriver.getM2CurrentMilliamps());
+  Serial.print(", Fwd/bkwd speed: ");
+  Serial.print(fwdBkwdSpeed);
+  Serial.print(", rotate speed: ");
+  Serial.print(rotateSpeed);
+  Serial.print(", command: ");
+  Serial.print((char)navCommand);
+  Serial.println("");
 }
 
 /* =================================================================
@@ -222,6 +291,8 @@ void checkForCommandAndDriveRobot() {
 void processMPU() {
   // if programming failed, don't try to do anything
   if (!dmpReady) return;
+
+  String BTOutput = "";
 
   // wait for MPU interrupt or extra packet(s) available
   while (!mpuInterrupt && fifoCount < packetSize) {
@@ -239,16 +310,9 @@ void processMPU() {
   // get current FIFO count
   fifoCount = mpu.getFIFOCount();
 
-  // check for overflow (this should never happen unless our code is too inefficient)
-  if ((mpuIntStatus & 0x10) || fifoCount == 1024) {
-    // reset so we can continue cleanly
-    mpu.resetFIFO();
-    Serial.println(F("FIFO overflow!"));
-  // otherwise, check for DMP data ready interrupt (this should happen frequently)
-  } else if (mpuIntStatus & 0x02) {
+  if (mpuIntStatus & 0x02) {
     // wait for correct available data length, should be a VERY short wait
     while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
-
     // read a packet from FIFO
     mpu.getFIFOBytes(fifoBuffer, packetSize);
 
@@ -258,56 +322,27 @@ void processMPU() {
 
     // display quaternion values in easy matrix form: w x y z
     mpu.dmpGetQuaternion(&q, fifoBuffer);
-    Serial.print("quat\t");
-    Serial.print(q.w);
-    Serial.print("\t");
-    Serial.print(q.x);
-    Serial.print("\t");
-    Serial.print(q.y);
-    Serial.print("\t");
-    Serial.print(q.z);
-    Serial.print("\t");
 
     // display Euler angles in degrees
     mpu.dmpGetEuler(euler, &q);
-    Serial.print("euler\t");
-    Serial.print(euler[0] * 180/M_PI);
-    Serial.print("\t");
-    Serial.print(euler[1] * 180/M_PI);
-    Serial.print("\t");
-    Serial.print(euler[2] * 180/M_PI);
-    Serial.print("\t");
-    // display Euler angles in degrees
-    mpu.dmpGetGravity(&gravity, &q);
-    mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-    Serial.print("ypr\t");
-    Serial.print(ypr[0] * 180/M_PI);
-    Serial.print("\t");
-    Serial.print(ypr[1] * 180/M_PI);
-    Serial.print("\t");
-    Serial.print(ypr[2] * 180/M_PI);
-    Serial.print("\t");
-    // display real acceleration, adjusted to remove gravity
+
     mpu.dmpGetAccel(&aa, fifoBuffer);
-    mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
-    Serial.print("areal\t");
-    Serial.print(aaReal.x);
-    Serial.print("\t");
-    Serial.print(aaReal.y);
-    Serial.print("\t");
-    Serial.print(aaReal.z);
-    Serial.print("\t");
-    // display initial world-frame acceleration, adjusted to remove gravity
-    // and rotated based on known orientation from quaternion
+    mpu.dmpGetGravity(&gravity, &q);
     mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
     mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
-    Serial.print("aworld\t");
-    Serial.print(aaWorld.x);
-    Serial.print("\t");
-    Serial.print(aaWorld.y);
-    Serial.print("\t");
-    Serial.print(aaWorld.z);
-    Serial.println("");
+
+    bluetooth.print((int)(euler[0] * 180/M_PI));
+    bluetooth.print("|");
+    bluetooth.print((int)(euler[1] * 180/M_PI));
+    bluetooth.print("|");
+    bluetooth.println((int)(euler[2] * 180/M_PI));
+    Serial.print((int)(euler[0] * 180/M_PI));
+    Serial.print("|");
+    Serial.print((int)(euler[1] * 180/M_PI));
+    Serial.print("|");
+    Serial.println((int)(euler[2] * 180/M_PI));
+
+    mpu.resetFIFO();
   }
 }
 
@@ -323,6 +358,10 @@ void setup()
   setupMPU();
 
   setupBluetoothMate();
+
+  Dynamixel.begin(1000000, DYNAMIXEL_FLOW_CONTROL_PIN);  // Inicialize the head servos at 1Mbps with the specified flow control pin
+
+  Serial.println("BB-8 Drive v1");
 }
 
 /* =================================================================
@@ -330,7 +369,7 @@ void setup()
  */
 void loop()
 {
-  checkForCommandAndDriveRobot();
+  int currentTime = millis();
 
-  processMPU();
+  checkForCommandAndDriveRobot();
 }
