@@ -112,6 +112,8 @@ void dmpDataReady() {
  The Dynamixel library requires a custom SoftwareSerial library, which you can download from the link at the top of this file.
 
  I'm currently using two servos for the head pan/tilt.
+
+ API docs are at http://austinlpalmer.com/Projects/Documentr/#/home
 */
 
 #define DYNAMIXEL_FLOW_CONTROL_PIN 5
@@ -122,9 +124,11 @@ void dmpDataReady() {
 int headPanTemp = 0,
     headPanVoltage = 0,
     headPanPosition = 0,
+    headPanLoad = 0,
     headTiltTemp = 0,
     headTiltVoltage = 0,
-    headTiltPosition = 0;
+    headTiltPosition = 0,
+    headTiltLoad = 0;
 
 /* =================================================================
  * Configuration options
@@ -146,6 +150,8 @@ void readDynamixelState() {
   headTiltVoltage = Dynamixel.readVoltage(HEAD_TILT_SERVO_ID);
   headPanPosition = Dynamixel.readPosition(HEAD_PAN_SERVO_ID);
   headTiltPosition = Dynamixel.readPosition(HEAD_TILT_SERVO_ID);
+  headPanLoad = Dynamixel.readLoad(HEAD_PAN_SERVO_ID);
+  headTiltLoad = Dynamixel.readLoad(HEAD_TILT_SERVO_ID);
 }
 
 /* =================================================================
