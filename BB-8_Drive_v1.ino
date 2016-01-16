@@ -17,18 +17,13 @@
 #include "MPU6050_6Axis_MotionApps20.h" // https://github.com/jrowberg/i2cdevlib/tree/master/Arduino/MPU6050
 #include "PID_v1.h" // https://github.com/br3ttb/Arduino-PID-Library/
 
-
+#include "RobotController.h"
 
 // ====================================================================================================================
 // ******* Global variables
 // ====================================================================================================================
 
-/*
- * Set up Bluetooth module
- */
-int bluetoothTx = 11;  // TX-O pin of bluetooth mate, Arduino D11
-int bluetoothRx = 13;  // RX-I pin of bluetooth mate, Arduino D13
-SoftwareSerial bluetooth(bluetoothTx, bluetoothRx);
+RobotController robotController;
 
 /* =================================================================
  * Set up Pololu VNH5019 dual motor driver.
@@ -52,6 +47,12 @@ SoftwareSerial bluetooth(bluetoothTx, bluetoothRx);
 #define VNH5019_EN2DIAG2 12
 #define VNH5019_CS2 A1
 
+#define DRIVE_MOTOR 1
+#define ROTATE_MOTOR 2
+
+#define DRIVE_MOTOR_RAMP_TIME 1000
+#define ROTATE_MOTOR_RAMP_TIME 1000
+
 DualVNH5019MotorShield mainMotorDriver(VNH5019_INA1, VNH5019_INB1, VNH5019_EN1DIAG1, VNH5019_CS1,
                                        VNH5019_INA2, VNH5019_INB2, VNH5019_EN2DIAG2, VNH5019_CS2);
 
@@ -61,6 +62,9 @@ int speedForRollingForward = 200, // Default speed for rolling forward
 int speedForRotatingLeft = 300, // Default speed for rotating left
     speedForRotatingRight = -300, // Default speed for rotatingRight
     speedForBrakingRotation = 0; // Speed for stopping rotation
+
+int driveMotorCurrentSpeed = 0;
+int rotateMotorCurrentSpeed = 0;
 
 int fwdBkwdSpeed, // M1 on Pololu VNH5019 is both Fwd/Bkwd motors
     rotateSpeed = 0; // M2 on Pololu VNH5019 is flywheel motor
@@ -129,11 +133,6 @@ int headPanTemp = 0,
     headTiltVoltage = 0,
     headTiltPosition = 0,
     headTiltLoad = 0;
-
-/* =================================================================
- * Configuration options
- */
-char navCommand; // Variable that holds the navigation command read from Bluetooth
 
 // ====================================================================================================================
 // ******* Functions
@@ -210,70 +209,99 @@ void setupMPU() {
   }
 }
 
-/* =================================================================
- * setupBluetoothMate() - Configure BluetoothMate for commanding
- */
-void setupBluetoothMate() {
-  bluetooth.begin(115200);  // The Bluetooth Mate defaults to 115200bps
-  bluetooth.print("$");  // Print three times individually
-  bluetooth.print("$");
-  bluetooth.print("$");  // Enter command mode
-  delay(100);  // Short delay, wait for the Mate to send back CMD
-  bluetooth.println("U,9600,N");  // Temporarily Change the baudrate to 9600, no parity
-  delay(100);
-  // 115200 can be too fast at times for NewSoftSerial to relay the data reliably
-  bluetooth.begin(9600);
-}
-
 void checkForCommandAndDriveRobot() {
 /* =================================================================
-  * checkForCommandAndDriveRobot() - Check for incoming Bluetooth
-  * commands and react accordingly.
+ * checkForCommandAndDriveRobot() - Check for incoming control
+ * commands and act accordingly.
 */
-  if(bluetooth.available()) {
-    navCommand = bluetooth.read();
+  Serial.println("Checking for command");
+  robotController.requestControllerState();
+  Serial.println("Checked for command");
+//  performRobotAction();
+}
 
-    if (navCommand != -1) { performRobotAction(navCommand); }
-  }
+/* =====================================================================
+ * void rampMotor(int motorNumber, int speedToRampTo, int overHowManyMilliseconds)
+ *
+ * Returns the speed we ramped to.
+ */
+void rampMotor(int motorNumber, int speedToRampTo, int overHowManyMilliseconds) {
+  int workingSpeed = 0;
 
-  if(Serial.available()) {
-    navCommand = Serial.read();
+  int startTime = millis(); // This is the time the function starts
+  int currentTime = millis(); // We'll use this later to check the currentTime
+  int endTime = startTime + overHowManyMilliseconds; // The time we should stop
 
-    if (navCommand != -1) { performRobotAction(navCommand); }
+  if (motorNumber == DRIVE_MOTOR) {
+    while(currentTime < endTime) {
+      currentTime = millis();
+
+      workingSpeed = map(currentTime, startTime, endTime, driveMotorCurrentSpeed, speedToRampTo);
+
+      mainMotorDriver.setM1Speed(workingSpeed);
+    }
+
+    // If it takes too long to go through the loop, at least make sure we end up at the right speed
+    mainMotorDriver.setM1Speed(speedToRampTo);
+
+    driveMotorCurrentSpeed = speedToRampTo;
+  } else if (motorNumber == ROTATE_MOTOR) {
+    while(currentTime < endTime) {
+      currentTime = millis();
+
+      workingSpeed = map(currentTime, startTime, endTime, rotateMotorCurrentSpeed, speedToRampTo);
+
+      mainMotorDriver.setM2Speed(workingSpeed);
+    }
+
+    // If it takes too long to go through the loop, at least make sure we end up at the right speed
+    mainMotorDriver.setM2Speed(speedToRampTo);
+
+    rotateMotorCurrentSpeed = speedToRampTo;
   }
 }
 
+void driveForward() {
+  rampMotor(DRIVE_MOTOR, speedForRollingForward, DRIVE_MOTOR_RAMP_TIME);
+}
+
+void driveBackward() {
+  rampMotor(DRIVE_MOTOR, speedForRollingBackward, DRIVE_MOTOR_RAMP_TIME);
+}
+
+void rotateLeft() {
+  rampMotor(ROTATE_MOTOR, speedForRotatingLeft, DRIVE_MOTOR_RAMP_TIME);
+}
+
+void rotateRight() {
+  rampMotor(ROTATE_MOTOR, speedForRotatingRight, DRIVE_MOTOR_RAMP_TIME);
+}
+
+void stopDriving() {
+  rampMotor(DRIVE_MOTOR, speedForBrakingRoll, DRIVE_MOTOR_RAMP_TIME);
+}
+
+void stopRotating() {
+  rampMotor(ROTATE_MOTOR, speedForBrakingRotation, DRIVE_MOTOR_RAMP_TIME);
+}
+
+void stopAllMotors() {
+  stopDriving();
+
+  stopRotating();
+}
 /* =================================================================
-  * performRobotAction() - Actuate robot as requested.
-*/
+ * performRobotAction() - Actuate robot as requested.
+ */
 void performRobotAction(char navCommand) {
   switch (navCommand) {
-     case 'F':
-       fwdBkwdSpeed = speedForRollingForward;
-       rotateSpeed = speedForBrakingRotation;
-       break;
-     case 'B':
-       fwdBkwdSpeed = speedForRollingBackward;
-       rotateSpeed = speedForBrakingRotation;
-       break;
-     case 'L':
-       fwdBkwdSpeed = speedForBrakingRoll;
-       rotateSpeed = speedForRotatingLeft;
-       break;
-     case 'R':
-       fwdBkwdSpeed = speedForBrakingRoll;
-       rotateSpeed = speedForRotatingRight;
-       break;
-     case 'I':
-       processMPU();
-       break;
-     default:
-       fwdBkwdSpeed = speedForBrakingRoll;
-       rotateSpeed = speedForBrakingRotation;
-       break;
+     case 'F': driveForward(); break;
+     case 'B': driveBackward(); break;
+     case 'L': rotateLeft(); break;
+     case 'R': rotateRight(); break;
+     case 'I': processMPU(); break;
+     default : stopAllMotors(); break;
   }
-  mainMotorDriver.setM1Speed(fwdBkwdSpeed);
-  mainMotorDriver.setM2Speed(rotateSpeed);
 
   if ((char)navCommand == 'S') { return; } // Don't print anything; just return if it's a stop
   Serial.print(", Fwd/bkwd current: ");
@@ -337,11 +365,6 @@ void processMPU() {
     mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
     mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
 
-    bluetooth.print((int)(euler[0] * 180/M_PI));
-    bluetooth.print("|");
-    bluetooth.print((int)(euler[1] * 180/M_PI));
-    bluetooth.print("|");
-    bluetooth.println((int)(euler[2] * 180/M_PI));
     Serial.print((int)(euler[0] * 180/M_PI));
     Serial.print("|");
     Serial.print((int)(euler[1] * 180/M_PI));
@@ -352,7 +375,6 @@ void processMPU() {
   }
 }
 
-
 /* =================================================================
  * setup() - Run once at startup
  */
@@ -360,12 +382,10 @@ void setup()
 {
   // Set up local serial output
   Serial.begin(115200);
-
-  setupMPU();
-
-  setupBluetoothMate();
-
-  Dynamixel.begin(1000000, DYNAMIXEL_FLOW_CONTROL_PIN);  // Inicialize the head servos at 1Mbps with the specified flow control pin
+  Serial.println("Starting");
+//  setupMPU();
+//
+//  Dynamixel.begin(1000000, DYNAMIXEL_FLOW_CONTROL_PIN);  // Inicialize the head servos at 1Mbps with the specified flow control pin
 
   Serial.println("BB-8 Drive v1");
 }
@@ -375,7 +395,5 @@ void setup()
  */
 void loop()
 {
-  int currentTime = millis();
-
   checkForCommandAndDriveRobot();
 }
