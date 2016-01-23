@@ -6,7 +6,6 @@
 
    If you aren't using Dynamixels, you don't need the updated SoftwareSerial. The default one will do just fine.
  */
-#include "SoftwareSerial.h" // Note that this is the replaced version required by the DynamixelSoftSerial - see link below.
 #include "DynamixelSerial1.h" // http://savageelectronics.blogspot.com.es/2011/08/actualizacion-biblioteca-dynamixel.html
 
 #include "Wire.h"
@@ -14,21 +13,20 @@
 
 #include "DualVNH5019MotorShield.h" // https://github.com/pololu/dual-vnh5019-motor-shield
 
-#include "MPU6050_6Axis_MotionApps20.h" // https://github.com/jrowberg/i2cdevlib/tree/master/Arduino/MPU6050
-#include "PID_v1.h" // https://github.com/br3ttb/Arduino-PID-Library/
+#define DEBUG
 
+#ifdef DEBUG
+  #define DEBUG_PRINT(x) Serial.println(x)
 
+  #include <MemoryFree.h>
+  #define PRINT_FREE_MEMORY() DEBUG_PRINT(freeMemory());
+#else
+  #define DEBUG_PRINT(x)
+  #define PRINT_FREE_MEMORY()
+#endif
 
-// ====================================================================================================================
-// ******* Global variables
-// ====================================================================================================================
-
-/*
- * Set up Bluetooth module
- */
-int bluetoothTx = 11;  // TX-O pin of bluetooth mate, Arduino D11
-int bluetoothRx = 13;  // RX-I pin of bluetooth mate, Arduino D13
-SoftwareSerial bluetooth(bluetoothTx, bluetoothRx);
+#define console Serial
+#define bluetooth Serial2
 
 /* =================================================================
  * Set up Pololu VNH5019 dual motor driver.
@@ -41,9 +39,7 @@ SoftwareSerial bluetooth(bluetoothTx, bluetoothRx);
  Connections", at https://www.pololu.com/docs/0J49/6.a
 */
 
-//#define VNH5019_INA1 2 // THIS IS THE DEFAULT
-// VNH5019_INA1 customized from 2 to 3 by AH
-#define VNH5019_INA1 3
+#define VNH5019_INA1 3 // PIN 2 IS THE DEFAULT
 #define VNH5019_INB1 4
 #define VNH5019_EN1DIAG1 6
 #define VNH5019_CS1 A0
@@ -55,70 +51,44 @@ SoftwareSerial bluetooth(bluetoothTx, bluetoothRx);
 DualVNH5019MotorShield mainMotorDriver(VNH5019_INA1, VNH5019_INB1, VNH5019_EN1DIAG1, VNH5019_CS1,
                                        VNH5019_INA2, VNH5019_INB2, VNH5019_EN2DIAG2, VNH5019_CS2);
 
-int speedForRollingForward = 200, // Default speed for rolling forward
-    speedForRollingBackward = -200, // Default speed for rolling backward
-    speedForBrakingRoll = 0; // Speed for stopping roll
-int speedForRotatingLeft = 300, // Default speed for rotating left
-    speedForRotatingRight = -300, // Default speed for rotatingRight
-    speedForBrakingRotation = 0; // Speed for stopping rotation
+#define FWD_SPEED 200 // Default speed for rolling forward
+#define BKWD_SPEED  -200 // Default speed for rolling backward
+#define ROTATE_LEFT_SPEED 300 // Default speed for rotating right
+#define ROTATE_RIGHT_SPEED -300 // Default speed for rotating right
+#define BRAKE_SPEED 0 // Speed for stopping rotation
 
-int fwdBkwdSpeed, // M1 on Pololu VNH5019 is both Fwd/Bkwd motors
-    rotateSpeed = 0; // M2 on Pololu VNH5019 is flywheel motor
+// RAMP_DELAY specifies how many milliseconds to wait after increasing the speed by
+// one. This gives a smooth ramp-up for speed.
+#define RAMP_DELAY 2
 
-// Counters for actions
-int counter1Start = millis();
-int counter1TargetElapsed = millis();
-int counter1ActuallyElapsed = millis();
-
-/* =================================================================
- * Set up gy521 MPU6050 mpu
- */
-MPU6050 mpu;
-
-// Config from https://github.com/jrowberg/i2cdevlib/blob/master/Arduino/MPU6050/Examples/MPU6050_DMP6/MPU6050_DMP6.ino
-// MPU control/status vars
-bool dmpReady = false;  // set true if DMP init was successful
-uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
-uint8_t devStatus;      // return status after each device operation (0 = success, !0 = error)
-uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
-uint16_t fifoCount;     // count of all bytes currently in FIFO
-uint8_t fifoBuffer[64]; // FIFO storage buffer
-
-// orientation/motion vars
-Quaternion q;           // [w, x, y, z]         quaternion container
-VectorInt16 aa;         // [x, y, z]            accel sensor measurements
-VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
-VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
-VectorFloat gravity;    // [x, y, z]            gravity vector
-float euler[3];         // [psi, theta, phi]    Euler angle container
-float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
-
-int16_t ax, ay, az;
-int16_t gx, gy, gz;
-
-volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
-void dmpDataReady() {
-    mpuInterrupt = true;
-}
-
+// Variables for tracking/reporting current motor speed.
+int fwdBkwdSpeed = 0, // M1 on Pololu VNH5019 is both Fwd/Bkwd motors
+    rotateSpeed = 0;  // M2 on Pololu VNH5019 is flywheel motor
 
 /* =================================================================
  * Set up Dynamixel AX-12a Servos
-
- This was a little annoying. There's a good explanation at http://savageelectronics.blogspot.ca/2011/01/arduino-y-dynamixel-ax-12.html,
- which is really quite easy. There's a hand-drawn diagram that shows you how to connect the 74LS241 buffer so the Arduino can
- talk to the servos, but I've also drawn that up in the Fritzing diagram.
-
- The Dynamixel library requires a custom SoftwareSerial library, which you can download from the link at the top of this file.
-
- I'm currently using two servos for the head pan/tilt.
-
- API docs are at http://austinlpalmer.com/Projects/Documentr/#/home
-*/
+ *
+ * This was a little annoying. There's a good explanation at
+ * http://savageelectronics.blogspot.ca/2011/01/arduino-y-dynamixel-ax-12.html,
+ * which is really quite easy. There's a hand-drawn diagram that shows you how to connect
+ * the 74LS241 buffer so the Arduino can talk to the servos, but I've also drawn that up
+ * in the Fritzing diagram.
+ *
+ * The servo is on Serial1.
+ *
+ * I'm currently using two servos for the head pan/tilt.
+ *
+ * API docs are at http://austinlpalmer.com/Projects/Documentr/#/home
+ */
 
 #define DYNAMIXEL_FLOW_CONTROL_PIN 5
 #define HEAD_PAN_SERVO_ID 1
 #define HEAD_TILT_SERVO_ID 2
+
+// Limits for range of tilt servo. This keeps BB-8 from trying to tilt his head
+// too far, i.e., into the motors/axle
+#define MIN_TILT_VALUE 160
+#define MAX_TILT_VALUE 200
 
 // Variables to track the details the Dynamixel servos give us.
 int headPanTemp = 0,
@@ -130,18 +100,62 @@ int headPanTemp = 0,
     headTiltPosition = 0,
     headTiltLoad = 0;
 
-/* =================================================================
- * Configuration options
- */
-char navCommand; // Variable that holds the navigation command read from Bluetooth
+unsigned long whenLastReceivedMessage = millis();
+#define MINIMUM_MESSAGE_INTERVAL 100 // Minimum number of milliseconds to wait before requesting controller status
 
-// ====================================================================================================================
-// ******* Functions
-// ====================================================================================================================
+String requestString; // Requesting controller state
+String controllerCommandString; // Response from controller
+
+/* =================================================================
+ * setup() - Run once at startup
+ */
+void setup()
+{
+  // Set up local serial output
+  console.begin(115200);
+
+  setupBlueSMiRF();
+
+  Dynamixel.begin(1000000, DYNAMIXEL_FLOW_CONTROL_PIN);  // Inicialize the head servos at 1Mbps with the specified flow control pin
+
+  console.println("Bweep bwoooo, I'm BB-8!");
+}
+
+/* =================================================================
+ * loop() - Call over and over until reset
+ */
+void loop()
+{
+  checkForCommandAndDriveRobot();
+}
+
+/* =================================================================
+ * getValue() - Get the specified value from the controller
+ * command string -
+ *
+ * e.g. getStringValue()
+ *
+ * Snagged from http://arduino.stackexchange.com/questions/1013/how-do-i-split-an-incoming-string
+ */
+String getValue(String data, char separator, int position)
+{
+  int found = 0;
+  int strIndex[] = { 0, -1  };
+  int maxIndex = data.length() - 1;
+
+  for(int i=0; i<=maxIndex && found<=position; i++) {
+    if(data.charAt(i) == separator || i == maxIndex) {
+      found++;
+      strIndex[0] = strIndex[1] + 1;
+      strIndex[1] = (i == maxIndex) ? i+1 : i;
+    }
+  }
+
+  return found>position ? data.substring(strIndex[0], strIndex[1]) : "";
+}
 
 /* =================================================================
  * readDynamixelState() - Read the current states of the Dynamixel servos
- *
  */
 void readDynamixelState() {
   headPanTemp = Dynamixel.readTemperature(HEAD_PAN_SERVO_ID);
@@ -155,227 +169,172 @@ void readDynamixelState() {
 }
 
 /* =================================================================
- * setupMPU() - Configure the mpu for DMP mode
- *
- * Copied from https://github.com/jrowberg/i2cdevlib/blob/master/Arduino/MPU6050/Examples/MPU6050_DMP6/MPU6050_DMP6.ino
+ * setupBlueSMiRF() - Configure BlueSMiRF for communication
  */
-void setupMPU() {
-  // Set up I2C bus for mpu
-  Wire.begin();
-  Wire.setClock(31000L); // Slow down the refresh rate to allow it to do other robot-y things like move
-
-  // initialize device
-  Serial.println(F("Initializing I2C devices..."));
-  mpu.initialize();
-
-  // verify connection
-  Serial.println(F("Testing device connections..."));
-  Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
-
-  // load and configure the DMP
-  Serial.println(F("Initializing DMP..."));
-  devStatus = mpu.dmpInitialize();
-
-  // supply your own gyro offsets here, scaled for min sensitivity
-  mpu.setXGyroOffset(220);
-  mpu.setYGyroOffset(76);
-  mpu.setZGyroOffset(-85);
-  mpu.setZAccelOffset(1788); // 1688 factory default for my test chip
-
-  // make sure it worked (returns 0 if so)
-  if (devStatus == 0) {
-    // turn on the DMP, now that it's ready
-    Serial.println(F("Enabling DMP..."));
-    mpu.setDMPEnabled(true);
-
-    // enable Arduino interrupt detection
-    Serial.println(F("Enabling interrupt detection (Arduino external interrupt 0)..."));
-    attachInterrupt(0, dmpDataReady, RISING);
-    mpuIntStatus = mpu.getIntStatus();
-
-    // set our DMP Ready flag so the main loop() function knows it's okay to use it
-    Serial.println(F("DMP ready! Waiting for first interrupt..."));
-    dmpReady = true;
-
-    // get expected DMP packet size for later comparison
-    packetSize = mpu.dmpGetFIFOPacketSize();
-  } else {
-    // ERROR!
-    // 1 = initial memory load failed
-    // 2 = DMP configuration updates failed
-    // (if it's going to break, usually the code will be 1)
-    Serial.print(F("DMP Initialization failed (code "));
-    Serial.print(devStatus);
-    Serial.println(F(")"));
-  }
+void setupBlueSMiRF() {
+  bluetooth.begin(115200);
 }
 
 /* =================================================================
- * setupBluetoothMate() - Configure BluetoothMate for commanding
+ * requestControllerState() - Ask the controller for its current
+ * state.
  */
-void setupBluetoothMate() {
-  bluetooth.begin(115200);  // The Bluetooth Mate defaults to 115200bps
-  bluetooth.print("$");  // Print three times individually
-  bluetooth.print("$");
-  bluetooth.print("$");  // Enter command mode
-  delay(100);  // Short delay, wait for the Mate to send back CMD
-  bluetooth.println("U,9600,N");  // Temporarily Change the baudrate to 9600, no parity
-  delay(100);
-  // 115200 can be too fast at times for NewSoftSerial to relay the data reliably
-  bluetooth.begin(9600);
+void requestControllerState() {
+  if (millis() < whenLastReceivedMessage + MINIMUM_MESSAGE_INTERVAL) {
+    return;
+  }
+
+  readDynamixelState();
+
+  requestString = "";
+
+  requestString.concat("|");requestString.concat("?");
+  requestString.concat("|");requestString.concat(666) ;
+  requestString.concat("|");requestString.concat(headPanPosition);
+  requestString.concat("|");requestString.concat(headTiltPosition);
+  requestString.concat("|");requestString.concat(mainMotorDriver.getM1CurrentMilliamps());
+  requestString.concat("|");requestString.concat(mainMotorDriver.getM2CurrentMilliamps());
+  requestString.concat("|");requestString.concat(fwdBkwdSpeed);
+  requestString.concat("|");requestString.concat(rotateSpeed);
+  requestString.concat("|");
+
+
+  // Send request to controller
+  bluetooth.println(requestString);
 }
 
+/* =================================================================
+ * readAndProcessControllerMessageIfAvailable() - Check the
+ * specified stream a response from the controller, and if there is
+ * one, process the data and react accordingly.
+ */
+void readAndProcessControllerMessageIfAvailable() {
+  if (bluetooth.available()) {
+    controllerCommandString = bluetooth.readStringUntil('\n');
+    whenLastReceivedMessage = millis();
+    processControllerMessage(controllerCommandString);
+  }
+
+  #ifdef DEBUG // If debugging, also receive commands from the console serial port
+  if (console.available()) {
+    controllerCommandString = console.readStringUntil('\n');
+
+    processControllerMessage(controllerCommandString);
+  }
+  #endif
+}
+
+/* =================================================================
+ * processControllerMessage() - Parse and process the received message.
+ * Right now, all we're looking for is the command the controller is
+ * sending. See handleCommand() for more details.
+ */
+void processControllerMessage(String controllerCommandString) {
+  // Extract the "command" so we know what to do... and then do it.
+  performRobotAction(getValue(controllerCommandString, '|', 1));
+}
+
+/* =================================================================
+ * checkForCommandAndDriveRobot() - Check for incoming Bluetooth
+ * commands and react accordingly.
+ */
 void checkForCommandAndDriveRobot() {
-/* =================================================================
-  * checkForCommandAndDriveRobot() - Check for incoming Bluetooth
-  * commands and react accordingly.
-*/
-  if(bluetooth.available()) {
-    navCommand = bluetooth.read();
+  // Ask the controller for its current state (and, by implication, the command)
+  requestControllerState();
 
-    if (navCommand != -1) { performRobotAction(navCommand); }
-  }
-
-  if(Serial.available()) {
-    navCommand = Serial.read();
-
-    if (navCommand != -1) { performRobotAction(navCommand); }
-  }
+  // Process results from the Bluetooth stream
+  readAndProcessControllerMessageIfAvailable();
 }
 
 /* =================================================================
-  * performRobotAction() - Actuate robot as requested.
-*/
-void performRobotAction(char navCommand) {
-  switch (navCommand) {
-     case 'F':
-       fwdBkwdSpeed = speedForRollingForward;
-       rotateSpeed = speedForBrakingRotation;
-       break;
-     case 'B':
-       fwdBkwdSpeed = speedForRollingBackward;
-       rotateSpeed = speedForBrakingRotation;
-       break;
-     case 'L':
-       fwdBkwdSpeed = speedForBrakingRoll;
-       rotateSpeed = speedForRotatingLeft;
-       break;
-     case 'R':
-       fwdBkwdSpeed = speedForBrakingRoll;
-       rotateSpeed = speedForRotatingRight;
-       break;
-     case 'I':
-       processMPU();
-       break;
-     default:
-       fwdBkwdSpeed = speedForBrakingRoll;
-       rotateSpeed = speedForBrakingRotation;
-       break;
-  }
-  mainMotorDriver.setM1Speed(fwdBkwdSpeed);
-  mainMotorDriver.setM2Speed(rotateSpeed);
-
-  if ((char)navCommand == 'S') { return; } // Don't print anything; just return if it's a stop
-  Serial.print(", Fwd/bkwd current: ");
-  Serial.print(mainMotorDriver.getM1CurrentMilliamps());
-  Serial.print(", Rotate current: ");
-  Serial.print(mainMotorDriver.getM2CurrentMilliamps());
-  Serial.print(", Fwd/bkwd speed: ");
-  Serial.print(fwdBkwdSpeed);
-  Serial.print(", rotate speed: ");
-  Serial.print(rotateSpeed);
-  Serial.print(", command: ");
-  Serial.print((char)navCommand);
-  Serial.println("");
-}
-
-/* =================================================================
- * processMPU() - Process fancy MPU shit
- *
- * Yanked right out of https://github.com/jrowberg/i2cdevlib/blob/master/Arduino/MPU6050/Examples/MPU6050_DMP6/MPU6050_DMP6.ino
+ * performRobotAction() - Actuate robot as requested.
  */
-void processMPU() {
-  // if programming failed, don't try to do anything
-  if (!dmpReady) return;
+void performRobotAction(String navCommand) {
+  console.println(navCommand);
 
-  String BTOutput = "";
-
-  // wait for MPU interrupt or extra packet(s) available
-  while (!mpuInterrupt && fifoCount < packetSize) {
-      // other program behavior stuff here
-
-      // if you are really paranoid you can frequently test in between other
-      // stuff to see if mpuInterrupt is true, and if so, "break;" from the
-      // while() loop to immediately process the MPU data
-  }
-
-  // reset interrupt flag and get INT_STATUS byte
-  mpuInterrupt = false;
-  mpuIntStatus = mpu.getIntStatus();
-
-  // get current FIFO count
-  fifoCount = mpu.getFIFOCount();
-
-  if (mpuIntStatus & 0x02) {
-    // wait for correct available data length, should be a VERY short wait
-    while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
-    // read a packet from FIFO
-    mpu.getFIFOBytes(fifoBuffer, packetSize);
-
-    // track FIFO count here in case there is > 1 packet available
-    // (this lets us immediately read more without waiting for an interrupt)
-    fifoCount -= packetSize;
-
-    // display quaternion values in easy matrix form: w x y z
-    mpu.dmpGetQuaternion(&q, fifoBuffer);
-
-    // display Euler angles in degrees
-    mpu.dmpGetEuler(euler, &q);
-
-    mpu.dmpGetAccel(&aa, fifoBuffer);
-    mpu.dmpGetGravity(&gravity, &q);
-    mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
-    mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
-
-    bluetooth.print((int)(euler[0] * 180/M_PI));
-    bluetooth.print("|");
-    bluetooth.print((int)(euler[1] * 180/M_PI));
-    bluetooth.print("|");
-    bluetooth.println((int)(euler[2] * 180/M_PI));
-    Serial.print((int)(euler[0] * 180/M_PI));
-    Serial.print("|");
-    Serial.print((int)(euler[1] * 180/M_PI));
-    Serial.print("|");
-    Serial.println((int)(euler[2] * 180/M_PI));
-
-    mpu.resetFIFO();
+  // Languages that let you switch() strings are so much nicer than this....
+  if(navCommand == "BF") { // Body forward
+    driveBody(FWD_SPEED);
+  } else if(navCommand == "BB") { // Body backward
+    driveBody(BKWD_SPEED);
+  } else if(navCommand == "BL") { // Body rotate left
+    rotateBody(ROTATE_LEFT_SPEED);
+  } else if(navCommand == "BR") { // Body rotate right
+    rotateBody(ROTATE_RIGHT_SPEED);
+  } else if(navCommand == "BS") { // Body stop
+    stopBody();
+  } else if(navCommand == "PHL") { // Pan head left
+    rotateHead(20);
+  } else if(navCommand == "PHR") { // Pan head right
+    rotateHead(-20);
+  } else if(navCommand == "THL") { // Tilt head left
+    tiltHead(20);
+  } else if(navCommand == "THR") { // Tilt head right
+    tiltHead(-20);
+  } else { // Default is to stop all motion
+    stopBody();
   }
 }
 
-
 /* =================================================================
- * setup() - Run once at startup
+ * stopBody() - Stop moving the body completely.
  */
-void setup()
-{
-  // Set up local serial output
-  Serial.begin(115200);
-
-  setupMPU();
-
-  setupBluetoothMate();
-
-  Dynamixel.begin(1000000, DYNAMIXEL_FLOW_CONTROL_PIN);  // Inicialize the head servos at 1Mbps with the specified flow control pin
-
-  Serial.println("BB-8 Drive v1");
+void stopBody() {
+  driveBody(BRAKE_SPEED);
+  rotateBody(BRAKE_SPEED);
 }
 
 /* =================================================================
- * loop() - Call over and over until reset
+ * driveBody() - Drive the body in the requested fwd/bkwd direction.
+ * Speed ramps up from 0 to give a longer, smoother acceleration.
  */
-void loop()
-{
-  int currentTime = millis();
+void driveBody(int motorSpeed) {
+  // First, stop the rotation motor
+  mainMotorDriver.setM2Speed(BRAKE_SPEED);
+  rotateSpeed = BRAKE_SPEED;
 
-  checkForCommandAndDriveRobot();
+  // Ramp up driving speed
+  for (int currentSpeed = 0; currentSpeed < motorSpeed; currentSpeed++) {
+    mainMotorDriver.setM1Speed(currentSpeed);
+    fwdBkwdSpeed = currentSpeed;
+
+    delay(RAMP_DELAY);
+  }
+}
+
+/* =================================================================
+ * rotateBody() - Rotate the body in the requested L/R direction.
+ */
+void rotateBody(int motorSpeed) {
+  // First, stop the driving motor
+  mainMotorDriver.setM1Speed(BRAKE_SPEED);
+  fwdBkwdSpeed = BRAKE_SPEED;
+
+  mainMotorDriver.setM2Speed(motorSpeed);
+  rotateSpeed = motorSpeed;
+}
+
+/* =================================================================
+ * rotateHead() - Rotate the head the specified number of degrees.
+ */
+void rotateHead(int degrees) {
+  // Change pan position relative to current position
+  int requestedPosition = headPanPosition + degrees;
+
+  Dynamixel.move(HEAD_PAN_SERVO_ID, requestedPosition);
+}
+
+/* =================================================================
+ * tiltHead() - Rotate the head the specified number of degrees.
+ * Includes a guard to make sure the head doesn't tilt too far and
+ * fall off or bang into something important.
+ */
+void tiltHead(int degrees) {
+  // Change tilt position relative to current position.
+  int requestedPosition = headTiltPosition + degrees;
+
+  // Guard to prevent tilt from going too far
+  if (requestedPosition > MIN_TILT_VALUE && requestedPosition < MAX_TILT_VALUE) {
+    Dynamixel.move(HEAD_TILT_SERVO_ID, requestedPosition);
+  }
 }
